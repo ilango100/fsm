@@ -1,51 +1,125 @@
 package fsm
 
-import "fmt"
+import (
+	"encoding/csv"
+	"fmt"
+	"os"
+	"strings"
+	"unicode/utf8"
+)
 
-import "strings"
+// Definition of DFA lives here. It allows DFA definition in the form of transition table.
 
-// Definition of DFA lives here. It allows DFA definition in the form of
-//  - Transition Table
-// 	- Transition Function
-//	- Transition Graph
-
-// DFAInfo defines information about DFA
-type DFAInfo struct {
+// DFA defines information about DFA
+type DFA struct {
 	States          []string
-	Alphabet        []byte
+	Alphabet        []rune
 	InitialState    string
 	AcceptingStates []string
+	CurrentState    string
+	Transition      map[string]map[rune]string
 }
 
-func (di DFAInfo) String() string {
-	str := fmt.Sprintf("\nStates:\t\t\t%v\n", di.States)
+func (dfa DFA) String() string {
+	str := fmt.Sprintf("\nStates:\t\t\t%v\n", dfa.States)
 	str += "Alphabet:\t\t["
-	for _, a := range di.Alphabet {
+	for _, a := range dfa.Alphabet {
 		str += fmt.Sprintf("%c ", a)
 	}
 	str = str[:len(str)-1]
-	str += fmt.Sprintf("]\nInitialState:\t\t%s\nAcceptingStates:\t%v\n", di.InitialState, di.AcceptingStates)
+	str += fmt.Sprintf("]\nInitialState:\t\t%s\nAcceptingStates:\t%v\n", dfa.InitialState, dfa.AcceptingStates)
 	str = strings.ReplaceAll(str, "[]string", "")
-	str = strings.ReplaceAll(str, "[]byte", "")
+	str = strings.ReplaceAll(str, "[]rune", "")
 	return str
 }
 
-// DFA defines Deterministic Finite Automata
-type DFA interface {
-	Reset() string
-	Next(byte) string
-	IsAccepted() bool
-	Info() DFAInfo
+// FromCSV builds a DFA from Transcition Table specified in a csv file.
+func FromCSV(file string) (*DFA, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	c := csv.NewReader(f)
+	header, err := c.Read()
+	if err != nil {
+		return nil, err
+	}
+	if header[0] != "DFA" {
+		return nil, fmt.Errorf("First record in header line must be 'DFA'")
+	}
 
-	// CurrentState() string // It is obtained on each call to next
-	// StartState() string	// Obtained from a call to Reset()
-	// SetState(string) error	// May allow abuse
+	// Parse the table to get all alphabets and states
+	alphabet := make([]rune, 0)
+	for i := range header[1:] {
+		if utf8.RuneCountInString(header[i+1]) > 1 {
+			return nil, fmt.Errorf("The header line records must contain single rune")
+		}
+		alpha := []rune(header[i+1])[0]
+		for i := range alphabet {
+			if alpha == alphabet[i] {
+				return nil, fmt.Errorf("Duplicate character in header row")
+			}
+		}
+		alphabet = append(alphabet, alpha)
+	}
+
+	states := make([]string, 0)
+	initialState := ""
+	acceptingStates := make([]string, 0)
+	transitionTable := make(map[string]map[rune]string)
+
+	for record, err := c.Read(); err == nil; record, err = c.Read() {
+		state := record[0]
+
+		if state[0] == '>' {
+			state = state[1:]
+			initialState = state
+		}
+		if state[0] == '*' {
+			if initialState == state {
+				initialState = state[1:]
+			}
+			state = state[1:]
+			acceptingStates = append(acceptingStates, state)
+		}
+
+		for _, s := range states {
+			if s == state {
+				return nil, fmt.Errorf("Duplicate rows for state: %s", s)
+			}
+		}
+
+		if _, p := transitionTable[state]; !p {
+			transitionTable[state] = make(map[rune]string)
+		}
+
+		for i := range alphabet {
+			transitionTable[state][alphabet[i]] = record[i+1]
+		}
+
+		states = append(states, state)
+
+	}
+
+	if initialState == "" {
+		return nil, fmt.Errorf("No initial state specified")
+	}
+
+	return &DFA{
+		States:          states,
+		Alphabet:        alphabet,
+		InitialState:    initialState,
+		AcceptingStates: acceptingStates,
+		CurrentState:    initialState,
+		Transition:      transitionTable,
+	}, nil
+
 }
 
-// DFATable creates a DFA from Transition Table
-func DFATable(transitionTable map[string]map[byte]string) (DFA, error) {
+// FromTable creates a DFA from Transition Table
+func FromTable(transitionTable map[string]map[rune]string) (*DFA, error) {
 	// Parse the table to get all alphabets and states
-	alphabet := make([]byte, 0)
+	alphabet := make([]rune, 0)
 	states := make([]string, 0)
 	initialState := ""
 	acceptingStates := make([]string, 0)
@@ -91,72 +165,92 @@ func DFATable(transitionTable map[string]map[byte]string) (DFA, error) {
 		}
 	}
 
-	return &tableDFA{
-		currentState: initialState,
-		transition:   transitionTable,
-		info: DFAInfo{
-			States:          states,
-			Alphabet:        alphabet,
-			InitialState:    initialState,
-			AcceptingStates: acceptingStates,
-		},
+	return &DFA{
+		States:          states,
+		Alphabet:        alphabet,
+		InitialState:    initialState,
+		AcceptingStates: acceptingStates,
+		CurrentState:    initialState,
+		Transition:      transitionTable,
 	}, nil
 }
 
-type tableDFA struct {
-	currentState string
-	transition   map[string]map[byte]string
-	info         DFAInfo
+// Reset resets the DFA to start state
+func (dfa *DFA) Reset() string {
+	dfa.CurrentState = dfa.InitialState
+	return dfa.CurrentState
 }
 
-func (t *tableDFA) Info() DFAInfo {
-	return t.info
-}
-
-func (t *tableDFA) Reset() string {
-	t.currentState = t.info.InitialState
-	return t.currentState
-}
-
-func (t *tableDFA) IsAccepted() bool {
-	if t.currentState == "NULL" {
+// IsAccepted checks whether the input so far is accepted
+func (dfa *DFA) IsAccepted() bool {
+	if dfa.CurrentState == "DEAD" {
 		return false
 	}
 
-	for i := range t.info.AcceptingStates {
-		if t.currentState == t.info.AcceptingStates[i] {
+	for i := range dfa.AcceptingStates {
+		if dfa.CurrentState == dfa.AcceptingStates[i] {
 			return true
 		}
 	}
 	return false
 }
 
-func (t *tableDFA) Next(r byte) string {
-	if t.currentState == "NULL" {
-		return "NULL"
+// Next proceeds to the next state of DFA according to transition table
+func (dfa *DFA) Next(r rune) string {
+	if dfa.CurrentState == "DEAD" {
+		return "DEAD"
 	}
 
-	row, present := t.transition[t.currentState]
+	row, present := dfa.Transition[dfa.CurrentState]
 	if !present {
-		t.currentState = "NULL"
-		return t.currentState
+		dfa.CurrentState = "DEAD"
+		return dfa.CurrentState
 	}
 
 	nxt, present := row[r]
-	if !present {
-		t.currentState = "NULL"
-		return t.currentState
+	if !present || nxt == "" {
+		dfa.CurrentState = "DEAD"
+		return dfa.CurrentState
 	}
 
-	t.currentState = nxt
+	dfa.CurrentState = nxt
 	return nxt
 }
 
-// 	{
-// 	nxt, err := t.transition(t.currentState, r)
-// 	if err != nil {
-// 		return d.currentState, err
-// 	}
-// 	d.currentState = nxt
-// 	return nxt, err
-// }
+// ToCSV writes the DFA definition to a csv file
+func (dfa DFA) ToCSV(file string) error {
+	fl, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+
+	fl.WriteString("DFA")
+	for i := range dfa.Alphabet {
+		fmt.Fprintf(fl, ",%c", dfa.Alphabet[i])
+	}
+	fmt.Fprintln(fl)
+
+	for state := range dfa.Transition {
+		if state == dfa.InitialState {
+			fmt.Fprint(fl, ">")
+		}
+		for i := range dfa.AcceptingStates {
+			if state == dfa.AcceptingStates[i] {
+				fmt.Fprint(fl, "*")
+				break
+			}
+		}
+		r := dfa.Transition[state]
+		fmt.Fprint(fl, state)
+		for _, j := range dfa.Alphabet {
+			if nxt, p := r[j]; p {
+				fmt.Fprintf(fl, ",%s", nxt)
+			} else {
+				fmt.Fprint(fl, ",DEAD")
+			}
+		}
+		fmt.Fprintln(fl)
+	}
+
+	return nil
+}

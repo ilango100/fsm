@@ -13,3 +13,6 @@
 
 .vscode
 *.code-workspace
+
+# DFA files
+*.csv
