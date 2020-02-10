@@ -23,19 +23,9 @@ func NFAtoDFA(nfa NFA) (DFA, error) {
 		for _, alpha := range nfa.Alphabet {
 
 			// Set of states for this alphabet
-			nxt := make(states, 0)
-			for _, state := range newstates[i] {
-				row, present := nfa.Transition[state]
-				if !present {
-					continue
-				}
+			nfa.CurrentStates = newstates[i]
+			nxt := nfa.Next(alpha)
 
-				nx, present := row[alpha]
-				if !present {
-					continue
-				}
-				nxt.addmany(nx)
-			}
 			already := false
 			for _, newst := range newstates {
 				if newst.equal(nxt) {
@@ -64,8 +54,8 @@ func NFAtoDFA(nfa NFA) (DFA, error) {
 	}
 
 	newstatenames := make([]string, 0)
-	for _, newst := range newstates {
-		newstatenames = append(newstatenames, strings.Join(newst, ""))
+	for newst := range transitionTable {
+		newstatenames = append(newstatenames, newst)
 	}
 
 	return DFA{
